@@ -17,6 +17,7 @@ package configgrpc // import "go.opentelemetry.io/collector/config/configgrpc"
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -29,8 +30,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer/roundrobin"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
 	"go.opentelemetry.io/collector/client"
@@ -40,6 +43,8 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/internal/middleware"
 )
+
+var	errMetadataNotFound = errors.New("no request metadata found")
 
 // Allowed balancer names to be set in grpclb_policy to discover the servers.
 var allowedBalancerNames = []string{roundrobin.Name, grpc.PickFirstBalancerName}
@@ -182,13 +187,13 @@ func (gcs *GRPCClientSettings) ToDialOptions(host component.Host, settings compo
 	if err != nil {
 		return nil, err
 	}
-	tlsDialOption := grpc.WithInsecure()
+	cred := insecure.NewCredentials()
 	if tlsCfg != nil {
-		tlsDialOption = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+		cred = credentials.NewTLS(tlsCfg)
 	} else if gcs.isSchemeHTTPS() {
-		tlsDialOption = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))
+		cred = credentials.NewTLS(&tls.Config{})
 	}
-	opts = append(opts, tlsDialOption)
+	opts = append(opts, grpc.WithTransportCredentials(cred))
 
 	if gcs.ReadBufferSize > 0 {
 		opts = append(opts, grpc.WithReadBufferSize(gcs.ReadBufferSize))
@@ -318,8 +323,12 @@ func (gss *GRPCServerSettings) ToServerOption(host component.Host, settings comp
 			return nil, err
 		}
 
-		uInterceptors = append(uInterceptors, authenticator.GRPCUnaryServerInterceptor)
-		sInterceptors = append(sInterceptors, authenticator.GRPCStreamServerInterceptor)
+		uInterceptors = append(uInterceptors, func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+			return authUnaryServerInterceptor(ctx, req, info, handler, authenticator.Authenticate)
+		})
+		sInterceptors = append(sInterceptors, func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			return authStreamServerInterceptor(srv, ss, info, handler, authenticator.Authenticate)
+		})
 	}
 
 	// Enable OpenTelemetry observability plugin.
@@ -378,4 +387,35 @@ func contextWithClient(ctx context.Context) context.Context {
 		cl.Addr = p.Addr
 	}
 	return client.NewContext(ctx, cl)
+}
+
+func authUnaryServerInterceptor(ctx context.Context, req interface{}, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, authenticate configauth.AuthenticateFunc) (interface{}, error) {
+	headers, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, errMetadataNotFound
+	}
+
+	ctx, err := authenticate(ctx, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	return handler(ctx, req)
+}
+
+func authStreamServerInterceptor(srv interface{}, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, authenticate configauth.AuthenticateFunc) error {
+	ctx := stream.Context()
+	headers, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return errMetadataNotFound
+	}
+
+	ctx, err := authenticate(ctx, headers)
+	if err != nil {
+		return err
+	}
+
+	wrapped := middleware.WrapServerStream(stream)
+	wrapped.WrappedContext = ctx
+	return handler(srv, wrapped)
 }

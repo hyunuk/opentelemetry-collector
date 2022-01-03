@@ -28,8 +28,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
-
-	"go.opentelemetry.io/collector/config/configmapprovider"
 )
 
 type WindowsService struct {
@@ -135,8 +133,8 @@ func openEventLog(serviceName string) (*eventlog.Log, error) {
 }
 
 func newWithWindowsEventLogCore(set CollectorSettings, elog *eventlog.Log) (*Collector, error) {
-	if set.ConfigMapProvider == nil {
-		set.ConfigMapProvider = configmapprovider.NewDefault(getConfigFlag(), getSetFlag())
+	if set.ConfigProvider == nil {
+		set.ConfigProvider = NewDefaultConfigProvider(getConfigFlag(), getSetFlag())
 	}
 	set.LoggingOptions = append(
 		set.LoggingOptions,

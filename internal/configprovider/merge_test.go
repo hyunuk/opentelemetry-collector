@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package configmapprovider
+package configprovider
 
 import (
 	"context"
@@ -21,35 +21,33 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go.opentelemetry.io/collector/config"
 )
 
 func TestMerge_GetError(t *testing.T) {
-	pl := NewMerge(&errProvider{err: nil}, &errProvider{errors.New("my error")})
+	getErr := errors.New("test error")
+	pl := NewMerge(&mockProvider{}, &mockProvider{retrieved: newErrGetRetrieved(getErr)})
 	require.NotNil(t, pl)
-	cp, err := pl.Retrieve(context.Background(), nil)
+	_, err := pl.Retrieve(context.Background(), nil)
 	assert.Error(t, err)
-	assert.Nil(t, cp)
+	assert.ErrorIs(t, err, getErr)
 }
 
 func TestMerge_CloseError(t *testing.T) {
-	pl := NewMerge(&errProvider{err: nil}, &errProvider{errors.New("my error")})
+	closeErr := errors.New("test error")
+	pl := NewMerge(&mockProvider{}, &mockProvider{retrieved: newErrCloseRetrieved(closeErr)})
 	require.NotNil(t, pl)
-	assert.Error(t, pl.Shutdown(context.Background()))
+	cp, err := pl.Retrieve(context.Background(), nil)
+	assert.NoError(t, err)
+	err = cp.Close(context.Background())
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, closeErr)
 }
 
-type errProvider struct {
-	err error
-}
-
-func (epl *errProvider) Retrieve(context.Context, func(*ChangeEvent)) (Retrieved, error) {
-	if epl.err == nil {
-		return &simpleRetrieved{confMap: config.NewMap()}, nil
-	}
-	return nil, epl.err
-}
-
-func (epl *errProvider) Shutdown(context.Context) error {
-	return epl.err
+func TestMerge_ShutdownError(t *testing.T) {
+	shutdownErr := errors.New("test error")
+	pl := NewMerge(&mockProvider{}, &mockProvider{shutdownErr: shutdownErr})
+	require.NotNil(t, pl)
+	err := pl.Shutdown(context.Background())
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, shutdownErr)
 }

@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v2
       - name: Setup Go
-        uses: actions/setup-go@v2.1.4
+        uses: actions/setup-go@v2.1.5
         with:
           go-version: 1.17
       - name: Setup Go Environment
@@ -45,7 +45,7 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v2
       - name: Setup Go
-        uses: actions/setup-go@v2.1.4
+        uses: actions/setup-go@v2.1.5
         with:
           go-version: 1.17
       - name: Setup Go Environment
@@ -78,6 +78,10 @@ jobs:
         run: |
           make gendependabot
           git diff -s --exit-code || (echo 'ALL_MODULES have been changed, please run "make gendependabot" and commit the changes in this PR.' && exit 1)
+      - name: Gen otelcorecol
+        run: |
+          make genotelcorecol
+          git diff -s --exit-code || (echo 'ALL_MODULES have been changed, please run "make genotelcorecol" and commit the changes in this PR.' && exit 1)
       - name: Multimod verify
         run: make multimod-verify
   unittest:
@@ -87,7 +91,7 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v2
       - name: Setup Go
-        uses: actions/setup-go@v2.1.4
+        uses: actions/setup-go@v2.1.5
         with:
           go-version: 1.17
       - name: Setup Go Environment
@@ -120,7 +124,7 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v2
       - name: Setup Go
-        uses: actions/setup-go@v2.1.4
+        uses: actions/setup-go@v2.1.5
         with:
           go-version: 1.17
       - name: Setup Go Environment

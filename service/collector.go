@@ -35,7 +35,6 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configunmarshaler"
 	"go.opentelemetry.io/collector/extension/ballastextension"
 	"go.opentelemetry.io/collector/service/internal"
 	"go.opentelemetry.io/collector/service/internal/telemetrylogs"
@@ -71,7 +70,6 @@ type Collector struct {
 	meterProvider       metric.MeterProvider
 	zPagesSpanProcessor *zpages.SpanProcessor
 
-	cfgW    *configWatcher
 	service *service
 	state   atomic.Value
 
@@ -87,17 +85,8 @@ type Collector struct {
 
 // New creates and returns a new instance of Collector.
 func New(set CollectorSettings) (*Collector, error) {
-	if err := validateConfigFromFactories(set.Factories); err != nil {
-		return nil, err
-	}
-
-	if set.ConfigMapProvider == nil {
+	if set.ConfigProvider == nil {
 		return nil, errors.New("invalid nil config provider")
-	}
-
-	if set.ConfigUnmarshaler == nil {
-		// use default unmarshaler.
-		set.ConfigUnmarshaler = configunmarshaler.NewDefault()
 	}
 
 	state := atomic.Value{}
@@ -145,14 +134,15 @@ func (col *Collector) runAndWaitForShutdownEvent(ctx context.Context) error {
 LOOP:
 	for {
 		select {
-		case err := <-col.cfgW.watcher:
-			col.logger.Warn("Config updated", zap.Error(err))
+		case err := <-col.set.ConfigProvider.Watch():
+			if err != nil {
+				col.logger.Error("Config watch failed", zap.Error(err))
+				break LOOP
+			}
 
+			col.logger.Warn("Config updated, restart service")
 			col.setCollectorState(Closing)
 
-			if err = col.cfgW.close(ctx); err != nil {
-				return fmt.Errorf("failed to close config watcher: %w", err)
-			}
 			if err = col.service.Shutdown(ctx); err != nil {
 				return fmt.Errorf("failed to shutdown the retiring config: %w", err)
 			}
@@ -178,25 +168,25 @@ LOOP:
 func (col *Collector) setupConfigurationComponents(ctx context.Context) error {
 	col.setCollectorState(Starting)
 
-	var err error
-	if col.cfgW, err = newConfigWatcher(ctx, col.set); err != nil {
-		return err
+	cfg, err := col.set.ConfigProvider.Get(ctx, col.set.Factories)
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
 	}
-
-	if col.logger, err = telemetrylogs.NewLogger(col.cfgW.cfg.Service.Telemetry.Logs, col.set.LoggingOptions); err != nil {
+	if col.logger, err = telemetrylogs.NewLogger(cfg.Service.Telemetry.Logs, col.set.LoggingOptions); err != nil {
 		return fmt.Errorf("failed to get logger: %w", err)
 	}
 
-	col.logger.Info("Applying configuration...")
+	telemetrylogs.SetColGRPCLogger(col.logger, cfg.Service.Telemetry.Logs.Level)
 
 	col.service, err = newService(&svcSettings{
 		BuildInfo: col.set.BuildInfo,
 		Factories: col.set.Factories,
-		Config:    col.cfgW.cfg,
+		Config:    cfg,
 		Telemetry: component.TelemetrySettings{
 			Logger:         col.logger,
 			TracerProvider: col.tracerProvider,
 			MeterProvider:  col.meterProvider,
+			MetricsLevel:   cfg.Telemetry.Metrics.Level,
 		},
 		ZPagesSpanProcessor: col.zPagesSpanProcessor,
 		AsyncErrorChannel:   col.asyncErrorChannel,
@@ -232,7 +222,7 @@ func (col *Collector) Run(ctx context.Context) error {
 		return err
 	}
 
-	if err := collectorTelemetry.init(col.asyncErrorChannel, getBallastSize(col.service), col.logger); err != nil {
+	if err := collectorTelemetry.init(col); err != nil {
 		return err
 	}
 
@@ -254,11 +244,7 @@ func (col *Collector) shutdown(ctx context.Context) error {
 	// Begin shutdown sequence.
 	col.logger.Info("Starting shutdown...")
 
-	if err := col.cfgW.close(ctx); err != nil {
-		errs = multierr.Append(errs, fmt.Errorf("failed to close config provider watcher: %w", err))
-	}
-
-	if err := col.set.ConfigMapProvider.Shutdown(ctx); err != nil {
+	if err := col.set.ConfigProvider.Shutdown(ctx); err != nil {
 		errs = multierr.Append(errs, fmt.Errorf("failed to shutdown config provider: %w", err))
 	}
 

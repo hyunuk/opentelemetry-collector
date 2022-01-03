@@ -16,38 +16,43 @@ package configmapprovider // import "go.opentelemetry.io/collector/config/config
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
-	"io/ioutil"
+	"os"
 
 	"gopkg.in/yaml.v2"
 
 	"go.opentelemetry.io/collector/config"
 )
 
-type inMemoryMapProvider struct {
-	buf io.Reader
+type envMapProvider struct {
+	envName string
 }
 
-// NewInMemory returns a new Provider that reads the configuration, from the provided buffer, as YAML.
-func NewInMemory(buf io.Reader) Provider {
-	return &inMemoryMapProvider{buf: buf}
+// NewEnv returns a new Provider that reads the configuration from the given environment variable.
+func NewEnv(envName string) Provider {
+	return &envMapProvider{
+		envName: envName,
+	}
 }
 
-func (inp *inMemoryMapProvider) Retrieve(context.Context, func(*ChangeEvent)) (Retrieved, error) {
-	content, err := ioutil.ReadAll(inp.buf)
-	if err != nil {
-		return nil, err
+func (emp *envMapProvider) Retrieve(_ context.Context, _ func(*ChangeEvent)) (Retrieved, error) {
+	if emp.envName == "" {
+		return nil, errors.New("config environment not specified")
 	}
 
+	content := os.Getenv(emp.envName)
+
 	var data map[string]interface{}
-	if err = yaml.Unmarshal(content, &data); err != nil {
+	if err := yaml.Unmarshal([]byte(content), &data); err != nil {
 		return nil, fmt.Errorf("unable to parse yaml: %w", err)
 	}
 
-	return &simpleRetrieved{confMap: config.NewMapFromStringMap(data)}, nil
+	return NewRetrieved(func(ctx context.Context) (*config.Map, error) {
+		return config.NewMapFromStringMap(data), nil
+	})
 }
 
-func (inp *inMemoryMapProvider) Shutdown(context.Context) error {
+func (*envMapProvider) Shutdown(context.Context) error {
 	return nil
 }

@@ -12,27 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package configmapprovider // import "go.opentelemetry.io/collector/config/configmapprovider"
+package configprovider // import "go.opentelemetry.io/collector/internal/configprovider"
 
 import (
 	"context"
 	"fmt"
 	"os"
+
+	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/config/configmapprovider"
 )
 
 type expandMapProvider struct {
-	base Provider
+	base configmapprovider.Provider
 }
 
 // NewExpand returns a Provider, that expands all environment variables for a
 // config.Map provided by the given Provider.
-func NewExpand(base Provider) Provider {
+func NewExpand(base configmapprovider.Provider) configmapprovider.Provider {
 	return &expandMapProvider{
 		base: base,
 	}
 }
 
-func (emp *expandMapProvider) Retrieve(ctx context.Context, onChange func(*ChangeEvent)) (Retrieved, error) {
+func (emp *expandMapProvider) Retrieve(ctx context.Context, onChange func(*configmapprovider.ChangeEvent)) (configmapprovider.Retrieved, error) {
 	retr, err := emp.base.Retrieve(ctx, onChange)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve from base provider: %w", err)
@@ -44,7 +47,9 @@ func (emp *expandMapProvider) Retrieve(ctx context.Context, onChange func(*Chang
 	for _, k := range cfgMap.AllKeys() {
 		cfgMap.Set(k, expandStringValues(cfgMap.Get(k)))
 	}
-	return &simpleRetrieved{confMap: cfgMap}, nil
+	return configmapprovider.NewRetrieved(func(ctx context.Context) (*config.Map, error) {
+		return cfgMap, nil
+	}, configmapprovider.WithClose(retr.Close))
 }
 
 func (emp *expandMapProvider) Shutdown(ctx context.Context) error {

@@ -24,6 +24,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,7 +36,6 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configmapprovider"
 	"go.opentelemetry.io/collector/internal/testcomponents"
 	"go.opentelemetry.io/collector/internal/testutil"
 )
@@ -52,9 +52,9 @@ func TestCollector_StartAsGoRoutine(t *testing.T) {
 	require.NoError(t, err)
 
 	set := CollectorSettings{
-		BuildInfo:         component.NewDefaultBuildInfo(),
-		Factories:         factories,
-		ConfigMapProvider: configmapprovider.NewFile(path.Join("testdata", "otelcol-config.yaml")),
+		BuildInfo:      component.NewDefaultBuildInfo(),
+		Factories:      factories,
+		ConfigProvider: NewDefaultConfigProvider(path.Join("testdata", "otelcol-config.yaml"), nil),
 	}
 	col, err := New(set)
 	require.NoError(t, err)
@@ -83,26 +83,26 @@ func TestCollector_StartAsGoRoutine(t *testing.T) {
 func TestCollector_Start(t *testing.T) {
 	factories, err := testcomponents.DefaultFactories()
 	require.NoError(t, err)
-
+	var once sync.Once
 	loggingHookCalled := false
 	hook := func(entry zapcore.Entry) error {
-		loggingHookCalled = true
+		once.Do(func() {
+			loggingHookCalled = true
+		})
 		return nil
 	}
 
 	col, err := New(CollectorSettings{
-		BuildInfo:         component.NewDefaultBuildInfo(),
-		Factories:         factories,
-		ConfigMapProvider: configmapprovider.NewFile(path.Join("testdata", "otelcol-config.yaml")),
-		LoggingOptions:    []zap.Option{zap.Hooks(hook)},
+		BuildInfo:      component.NewDefaultBuildInfo(),
+		Factories:      factories,
+		ConfigProvider: NewDefaultConfigProvider(path.Join("testdata", "otelcol-config.yaml"), nil),
+		LoggingOptions: []zap.Option{zap.Hooks(hook)},
 	})
 	require.NoError(t, err)
 
-	const testPrefix = "a_test"
 	metricsPort := testutil.GetAvailablePort(t)
 	require.NoError(t, flags().Parse([]string{
 		"--metrics-addr=localhost:" + strconv.FormatUint(uint64(metricsPort), 10),
-		"--metrics-prefix=" + testPrefix,
 	}))
 
 	colDone := make(chan struct{})
@@ -126,7 +126,7 @@ func TestCollector_Start(t *testing.T) {
 	mandatoryLabels := []string{
 		"service_instance_id",
 	}
-	assertMetrics(t, testPrefix, metricsPort, mandatoryLabels)
+	assertMetrics(t, metricsPort, mandatoryLabels)
 
 	assertZPages(t)
 
@@ -139,7 +139,7 @@ func TestCollector_Start(t *testing.T) {
 
 type mockColTelemetry struct{}
 
-func (tel *mockColTelemetry) init(chan<- error, uint64, *zap.Logger) error {
+func (tel *mockColTelemetry) init(*Collector) error {
 	return nil
 }
 
@@ -157,9 +157,9 @@ func TestCollector_ReportError(t *testing.T) {
 	require.NoError(t, err)
 
 	col, err := New(CollectorSettings{
-		BuildInfo:         component.NewDefaultBuildInfo(),
-		Factories:         factories,
-		ConfigMapProvider: configmapprovider.NewFile(path.Join("testdata", "otelcol-config.yaml")),
+		BuildInfo:      component.NewDefaultBuildInfo(),
+		Factories:      factories,
+		ConfigProvider: NewDefaultConfigProvider(path.Join("testdata", "otelcol-config.yaml"), nil),
 	})
 	require.NoError(t, err)
 
@@ -179,7 +179,7 @@ func TestCollector_ReportError(t *testing.T) {
 	}, time.Second*2, time.Millisecond*200)
 }
 
-func assertMetrics(t *testing.T, prefix string, metricsPort uint16, mandatoryLabels []string) {
+func assertMetrics(t *testing.T, metricsPort uint16, mandatoryLabels []string) {
 	client := &http.Client{}
 	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/metrics", metricsPort))
 	require.NoError(t, err)
@@ -191,6 +191,7 @@ func assertMetrics(t *testing.T, prefix string, metricsPort uint16, mandatoryLab
 	parsed, err := parser.TextToMetricFamilies(reader)
 	require.NoError(t, err)
 
+	prefix := "otelcol"
 	for metricName, metricFamily := range parsed {
 		// require is used here so test fails with a single message.
 		require.True(

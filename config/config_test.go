@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap/zapcore"
+
+	"go.opentelemetry.io/collector/config/configtelemetry"
 )
 
 var errInvalidRecvConfig = errors.New("invalid receiver config")
@@ -81,6 +83,15 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name:     "valid",
 			cfgFn:    generateConfig,
+			expected: nil,
+		},
+		{
+			name: "custom-service-telemetry-encoding",
+			cfgFn: func() *Config {
+				cfg := generateConfig()
+				cfg.Service.Telemetry.Logs.Encoding = "test_encoding"
+				return cfg
+			},
 			expected: nil,
 		},
 		{
@@ -213,15 +224,6 @@ func TestConfigValidate(t *testing.T) {
 			},
 			expected: fmt.Errorf(`extension "nop" has invalid configuration: %w`, errInvalidExtConfig),
 		},
-		{
-			name: "invalid-service-telemetry-encoding",
-			cfgFn: func() *Config {
-				cfg := generateConfig()
-				cfg.Service.Telemetry.Logs.Encoding = "unknown"
-				return cfg
-			},
-			expected: errors.New(`service telemetry logs invalid encoding: "unknown", valid values are "json" and "console"`),
-		},
 	}
 
 	for _, test := range testCases {
@@ -255,15 +257,22 @@ func generateConfig() *Config {
 			},
 		},
 		Service: Service{
-			Telemetry: ServiceTelemetry{Logs: ServiceTelemetryLogs{
-				Level:             zapcore.DebugLevel,
-				Development:       true,
-				Encoding:          "console",
-				DisableCaller:     true,
-				DisableStacktrace: true,
-				OutputPaths:       []string{"stderr", "./output-logs"},
-				ErrorOutputPaths:  []string{"stderr", "./error-output-logs"},
-				InitialFields:     map[string]interface{}{"fieldKey": "filed-value"}}},
+			Telemetry: ServiceTelemetry{
+				Logs: ServiceTelemetryLogs{
+					Level:             zapcore.DebugLevel,
+					Development:       true,
+					Encoding:          "console",
+					DisableCaller:     true,
+					DisableStacktrace: true,
+					OutputPaths:       []string{"stderr", "./output-logs"},
+					ErrorOutputPaths:  []string{"stderr", "./error-output-logs"},
+					InitialFields:     map[string]interface{}{"fieldKey": "filed-value"},
+				},
+				Metrics: ServiceTelemetryMetrics{
+					Level:   configtelemetry.LevelNormal,
+					Address: ":8080",
+				},
+			},
 			Extensions: []ComponentID{NewComponentID("nop")},
 			Pipelines: map[ComponentID]*Pipeline{
 				NewComponentID("traces"): {

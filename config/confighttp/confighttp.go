@@ -59,6 +59,9 @@ type HTTPClientSettings struct {
 	// Auth configuration for outgoing HTTP calls.
 	Auth *configauth.Authentication `mapstructure:"auth,omitempty"`
 
+	// The compression key for supported compression types within collector.
+	Compression middleware.CompressionType `mapstructure:"compression"`
+
 	// MaxIdleConns is used to set a limit to the maximum idle HTTP connections the client can keep open.
 	// There's an already set value, and we want to override it only if an explicit value provided
 	MaxIdleConns *int `mapstructure:"max_idle_conns"`
@@ -133,6 +136,12 @@ func (hcs *HTTPClientSettings) ToClient(ext map[config.ComponentID]component.Ext
 		}
 	}
 
+	// Compress the body using specified compression methods if non-empty string is provided.
+	// Supporting gzip, zlib, deflate, snappy, and zstd; none is treated as uncompressed.
+	if hcs.Compression != middleware.CompressionEmpty && hcs.Compression != middleware.CompressionNone {
+		clientTransport = middleware.NewCompressRoundTripper(clientTransport, hcs.Compression)
+	}
+
 	if hcs.Auth != nil {
 		if ext == nil {
 			return nil, fmt.Errorf("extensions configuration not found")
@@ -187,6 +196,9 @@ type HTTPServerSettings struct {
 
 	// CORS configures the server for HTTP cross-origin resource sharing (CORS).
 	CORS *CORSSettings `mapstructure:"cors,omitempty"`
+
+	// Auth for this receiver
+	Auth *configauth.Authentication `mapstructure:"auth,omitempty"`
 }
 
 // ToListener creates a net.Listener.
@@ -226,7 +238,7 @@ func WithErrorHandler(e middleware.ErrorHandler) ToServerOption {
 }
 
 // ToServer creates an http.Server from settings object.
-func (hss *HTTPServerSettings) ToServer(_ component.Host, settings component.TelemetrySettings, handler http.Handler, opts ...ToServerOption) (*http.Server, error) {
+func (hss *HTTPServerSettings) ToServer(host component.Host, settings component.TelemetrySettings, handler http.Handler, opts ...ToServerOption) (*http.Server, error) {
 	serverOpts := &toServerOptions{}
 	for _, o := range opts {
 		o(serverOpts)
@@ -247,6 +259,15 @@ func (hss *HTTPServerSettings) ToServer(_ component.Host, settings component.Tel
 		handler = cors.New(co).Handler(handler)
 	}
 	// TODO: emit a warning when non-empty CorsHeaders and empty CorsOrigins.
+
+	if hss.Auth != nil {
+		authenticator, err := hss.Auth.GetServerAuthenticator(host.GetExtensions())
+		if err != nil {
+			return nil, err
+		}
+
+		handler = authInterceptor(handler, authenticator.Authenticate)
+	}
 
 	// Enable OpenTelemetry observability plugin.
 	// TODO: Consider to use component ID string as prefix for all the operations.
@@ -291,4 +312,16 @@ type CORSSettings struct {
 	// Set it to the number of seconds that browsers should cache a CORS
 	// preflight response for.
 	MaxAge int `mapstructure:"max_age,omitempty"`
+}
+
+func authInterceptor(next http.Handler, authenticate configauth.AuthenticateFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, err := authenticate(r.Context(), r.Header)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

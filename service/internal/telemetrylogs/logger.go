@@ -17,6 +17,8 @@ package telemetrylogs // import "go.opentelemetry.io/collector/service/internal/
 import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zapgrpc"
+	"google.golang.org/grpc/grpclog"
 
 	"go.opentelemetry.io/collector/config"
 )
@@ -48,5 +50,31 @@ func NewLogger(cfg config.ServiceTelemetryLogs, options []zap.Option) (*zap.Logg
 	if err != nil {
 		return nil, err
 	}
+
 	return logger, nil
+}
+
+// SetColGRPCLogger constructs a zapgrpc.Logger instance, and installs it as grpc logger, cloned from baseLogger with
+// exact configuration. The minimum level of gRPC logs is set to WARN should the loglevel of the collector is set to
+// INFO to avoid copious logging from grpc framework.
+func SetColGRPCLogger(baseLogger *zap.Logger, loglevel zapcore.Level) *zapgrpc.Logger {
+	logger := zapgrpc.NewLogger(baseLogger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		var c zapcore.Core
+		if loglevel == zap.InfoLevel {
+			var err error
+			// NewIncreaseLevelCore errors only if the new log level is less than the initial core level.
+			// In this case it never happens as WARN is always greater than INFO, therefore ignoring it.
+			c, err = zapcore.NewIncreaseLevelCore(core, zap.WarnLevel)
+			// In case of an error changing the level, move on, this happens when using the NopCore
+			if err != nil {
+				c = core
+			}
+		} else {
+			c = core
+		}
+		return c.With([]zapcore.Field{zap.Bool("grpc_log", true)})
+	})))
+
+	grpclog.SetLoggerV2(logger)
+	return logger
 }
